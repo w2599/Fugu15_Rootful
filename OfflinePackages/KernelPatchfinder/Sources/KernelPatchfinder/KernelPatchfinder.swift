@@ -883,66 +883,234 @@ open class KernelPatchfinder {
         }
     }()
     
-    /// Find `ptov_table`, `gPhysBase` and `gVirtBase` for phys-to-virt translation
-    public lazy var ptov_data: (table: UInt64, physBase: UInt64?, virtBase: UInt64?)? = {
-        if cachedResults != nil {
-            guard let table = cachedResults.unsafelyUnwrapped["ptov_data_table"] else {
-                return nil
-            }
-            
-            return (table: table, physBase: cachedResults.unsafelyUnwrapped["ptov_data_physBase"], virtBase: cachedResults.unsafelyUnwrapped["ptov_data_virtBase"])
-        }
-        
-        guard let panic_str = cStrSect.addrOf("%s: illegal PA: 0x%llx; phys base 0x%llx, size 0x%llx @%s:%d") else {
+    
+    
+    // Offset of arm_vm_init function
+    public lazy var arm_vm_init: UInt64? = {
+        guard let hint_str = cStrSect.addrOf("use_contiguous_hint") else {
             return nil
         }
-        
-        guard var pc = textExec.findNextXref(to: panic_str, optimization: .noBranches) else {
+
+        guard let arm_vm_init_mid: UInt64 = textExec.findNextXref(to: hint_str, startAt:nil, optimization: .noBranches) else {
             return nil
         }
-        
-        var virtBase: UInt64?
-        var physBase: UInt64?
-        
-        while true {
-            if AArch64Instr.isPacibsp(textExec.instruction(at: pc) ?? 0) {
-                // Found start!
-                var firstLoadLoc: UInt64?
-                while true {
-                    if let dst = AArch64Instr.Emulate.adrpLdr(adrp: textExec.instruction(at: pc) ?? 0, ldr: textExec.instruction(at: pc + 4) ?? 0, pc: pc) {
-                        if let firstLoadLoc = firstLoadLoc {
-                            return (table: min(firstLoadLoc, dst), physBase: physBase, virtBase: virtBase)
-                        }
-                        
-                        firstLoadLoc = dst
-                        pc += 4
-                    }
-                    
-                    pc += 4
-                }
-            } else if physBase == nil && AArch64Instr.Args.subs(textExec.instruction(at: pc) ?? 0) != nil {
-                if let pb = AArch64Instr.Emulate.adrpLdr(adrp: textExec.instruction(at: pc - 8) ?? 0, ldr: textExec.instruction(at: pc - 4) ?? 0, pc: pc - 8) {
-                    physBase = pb
-                    var foundFirst = false
-                    var tpc = pc
-                    while true {
-                        if let dst = AArch64Instr.Emulate.adrpLdr(adrp: textExec.instruction(at: tpc) ?? 0, ldr: textExec.instruction(at: tpc + 4) ?? 0, pc: tpc) {
-                            if !foundFirst {
-                                foundFirst = true
-                            } else {
-                                virtBase = dst
-                                break
-                            }
-                        }
-                        
-                        tpc += 4
-                    }
-                }
-            }
-            
-            pc -= 4
+
+        var arm_vm_init = arm_vm_init_mid
+        while !AArch64Instr.isPacibsp(textExec.instruction(at: arm_vm_init) ?? 0, alsoAllowNop: false) {
+            arm_vm_init -= 4
         }
+
+        return arm_vm_init
     }()
+
+    // Offset of `gVirtBase` global variable
+    public lazy var gVirtBase: UInt64? = {
+        guard let arm_vm_init_ = arm_vm_init else {
+            return nil
+        }
+
+        var gVirtBase: UInt64? = nil
+        var matches = 0
+        for i in 1..<50 {
+            let pc = arm_vm_init_ + UInt64(i * 4)
+
+            guard let strArgs = AArch64Instr.Args.str(textExec.instruction(at: pc) ?? 0) else {
+                continue
+            }
+
+            matches += 1
+            if matches == 1 {
+                for k in 1..<10 {
+                    let pc2 = pc - UInt64(k * 4)
+                    guard let page = AArch64Instr.Emulate.adrp(textExec.instruction(at: pc2) ?? 0, pc: pc2) else {
+                        continue
+                    }
+                    gVirtBase = page + UInt64(strArgs.imm)
+                    break
+                }
+                break
+            }
+        }
+        return gVirtBase
+    }()
+
+    // Offset of `gPhysBase` global variable
+    public lazy var gPhysBase: UInt64? = {
+        guard let arm_vm_init_ = arm_vm_init else {
+            return nil
+        }
+
+        var gPhysBase: UInt64? = nil
+        var matches = 0
+        for i in 1..<50 {
+            let pc = arm_vm_init_ + UInt64(i * 4)
+
+            guard let strArgs = AArch64Instr.Args.str(textExec.instruction(at: pc) ?? 0) else {
+                continue
+            }
+
+            matches += 1
+            if matches == 2 {
+                for k in 1..<10 {
+                    let pc2 = pc - UInt64(k * 4)
+                    guard let page = AArch64Instr.Emulate.adrp(textExec.instruction(at: pc2) ?? 0, pc: pc2) else {
+                        continue
+                    }
+                    gPhysBase = page + UInt64(strArgs.imm)
+                    break
+                }
+                break
+            }
+        }
+        return gPhysBase
+    }()
+
+    // Offset of `gPhysSize` global variable
+    public lazy var gPhysSize: UInt64? = {
+        guard let arm_vm_init_ = arm_vm_init else {
+            return nil
+        }
+
+        var gPhysSize: UInt64? = nil
+        var matches = 0
+        for i in 1..<50 {
+            let pc = arm_vm_init_ + UInt64(i * 4)
+
+            guard let strArgs = AArch64Instr.Args.str(textExec.instruction(at: pc) ?? 0) else {
+                continue
+            }
+
+            matches += 1
+            if matches == 5 {
+                for k in 1..<10 {
+                    let pc2 = pc - UInt64(k * 4)
+                    guard let page = AArch64Instr.Emulate.adrp(textExec.instruction(at: pc2) ?? 0, pc: pc2) else {
+                        continue
+                    }
+                    gPhysSize = page + UInt64(strArgs.imm)
+                    break
+                }
+                break
+            }
+        }
+        return gPhysSize
+    }()
+
+    // Offset of `ptov_table` global variable
+    public lazy var ptov_table: UInt64? = {
+        guard let arm_vm_init_ = arm_vm_init else {
+            return nil
+        }
+
+        // First call in arm_vm_init is phystokv
+        var phystokv: UInt64? = nil
+        var k = 0
+        while phystokv == nil {
+            let pc = arm_vm_init_ + UInt64(k * 4)
+            phystokv = AArch64Instr.Emulate.bl(textExec.instruction(at: pc) ?? 0, pc: pc)
+            k += 1
+        }
+
+        // Second (adrp, ldr) in phystokv is ptov_table
+        var ptov_table: UInt64? = nil
+        var matches = 0
+        for i in 1..<50 {
+            let ldrPc = phystokv! + UInt64(i * 4)
+
+            guard let ldrArgs = AArch64Instr.Args.ldr(textExec.instruction(at: ldrPc) ?? 0) else {
+                continue
+            }
+
+            let adrpPc = ldrPc - 4
+            guard let page = AArch64Instr.Emulate.adrp(textExec.instruction(at: adrpPc) ?? 0, pc: adrpPc) else {
+                continue
+            }
+
+            matches += 1
+            if matches == 2 {
+                ptov_table = page + UInt64(ldrArgs.imm)
+                break
+            }
+        }
+
+        return ptov_table
+    }()
+    public lazy var ptov_data: (table: UInt64, physBase: UInt64?, virtBase: UInt64?)? = {
+     
+        let table1 = ptov_table
+        let physBase1 = gPhysBase
+        let virtBase1 = gVirtBase
+        
+        
+        return (table: table1, physBase: physBase1, virtBase: virtBase1) as! (table: UInt64, physBase: UInt64?, virtBase: UInt64?)
+        
+    }()
+    
+//    /// Find `ptov_table`, `gPhysBase` and `gVirtBase` for phys-to-virt translation
+//    public lazy var ptov_data: (table: UInt64, physBase: UInt64?, virtBase: UInt64?)? = {
+//        if cachedResults != nil {
+//            guard let table = cachedResults.unsafelyUnwrapped["ptov_data_table"] else {
+//                return nil
+//            }
+//
+//            return (table: table, physBase: cachedResults.unsafelyUnwrapped["ptov_data_physBase"], virtBase: cachedResults.unsafelyUnwrapped["ptov_data_virtBase"])
+//        }
+//
+//        guard let panic_str = cStrSect.addrOf("%s: illegal PA: 0x%llx; phys base 0x%llx, size 0x%llx @%s:%d") else {
+//            return nil
+//        }
+//
+//        guard var pc = textExec.findNextXref(to: panic_str, optimization: .noBranches) else {
+//            return nil
+//        }
+//
+//        var virtBase: UInt64?
+//        var physBase: UInt64?
+//
+//        while true {
+//            if AArch64Instr.isPacibsp(textExec.instruction(at: pc) ?? 0) {
+//                // Found start!
+//                var firstLoadLoc: UInt64?
+//                while true {
+//                    if let dst = AArch64Instr.Emulate.adrpLdr(adrp: textExec.instruction(at: pc) ?? 0, ldr: textExec.instruction(at: pc + 4) ?? 0, pc: pc) {
+//                        if let firstLoadLoc = firstLoadLoc {
+//
+//                            print("table: " + String(min(firstLoadLoc, dst), radix: 16))
+//                            print("physBase: " + String(physBase!, radix: 16))
+//                            print("virtBase: " + String(virtBase!, radix: 16))
+//
+//                            return (table: min(firstLoadLoc, dst), physBase: physBase, virtBase: virtBase)
+//                        }
+//
+//                        firstLoadLoc = dst
+//                        pc += 4
+//                    }
+//
+//                    pc += 4
+//                }
+//            } else if physBase == nil && AArch64Instr.Args.subs(textExec.instruction(at: pc) ?? 0) != nil {
+//                if let pb = AArch64Instr.Emulate.adrpLdr(adrp: textExec.instruction(at: pc - 8) ?? 0, ldr: textExec.instruction(at: pc - 4) ?? 0, pc: pc - 8) {
+//                    physBase = pb
+//                    var foundFirst = false
+//                    var tpc = pc
+//                    while true {
+//                        if let dst = AArch64Instr.Emulate.adrpLdr(adrp: textExec.instruction(at: tpc) ?? 0, ldr: textExec.instruction(at: tpc + 4) ?? 0, pc: tpc) {
+//                            if !foundFirst {
+//                                foundFirst = true
+//                            } else {
+//                                virtBase = dst
+//                                break
+//                            }
+//                        }
+//
+//                        tpc += 4
+//                    }
+//                }
+//            }
+//
+//            pc -= 4
+//        }
+//    }()
     
     /// `pmap_alloc_page_for_kern` function
     public lazy var pmap_alloc_page_for_kern: UInt64? = {
